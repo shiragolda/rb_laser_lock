@@ -9,7 +9,7 @@ import numpy as np
 from scipy.interpolate  import interp1d
 import os
 import serial
-
+import threading
 import argparse
 
 
@@ -20,7 +20,7 @@ parser.add_argument("-s", "--serialport", type=str,
                     help='Serial port to use to communicate with the'
                          'wavemeter. e.g /dev/ttyUSB0 for linux, '
                          'COM10 for windows',
-                    default='COM10')
+                    default='COM14')
 parser.add_argument("-p", "--publishport", type=int,
                     help='zeromq port to use to broadcast the wavemeter'
                          'reading.',
@@ -55,38 +55,54 @@ class zmq_pub_dict:
 publisher = zmq_pub_dict(args.publishport, "rb_laser_error_signal")
 
 ser = serial.Serial()
-ser.port = 'COM10'
+ser.port = 'COM14'
 ser.baudrate = 115200
 ser.setDTR(False)
+ser.timeout = 2
 ser.open()
+
+kbd_input = ''
+new_input = True
+
+def commandListener():
+    global kbd_input, new_input
+    kbd_input = raw_input()
+    new_input = True
+
 
 def get_error_signal():
     s = ser.readline()
     try:
-        if 'lock' in s:
-            error = -9999.0
-            err_msg = s
-        else:
-            error,correction = s.split(',')
-            error = float(error)
-            correction = float(correction)
-            err_msg = ''
+        error,correction = s.split(',')
+        error = float(error)
+        correction = float(correction)
+        msg = 'ok'
     except:
-        error = -9999.0
-        err_msg = 'unknown error'
+        error = 0
+        correction = 0
+        msg = s
     
-    return error,correction,err_msg
+    return error,correction,msg
 
 
 done = False
 while not done:
     try:
-        error,correction,err_msg = get_error_signal();
+        error,correction,msg = get_error_signal();
+        
+        if msg=='ok':
+            data_dict = {'error_signal': error, 'correction_signal': correction, 'message': msg}
 
-        data_dict = {'error_signal': error, 'correction_signal': correction, 'error_message': err_msg}
-
-        dt = str(time.time())
-        publisher.send(data_dict)
+            dt = str(time.time())
+            publisher.send(data_dict)
+        elif msg!='':
+            print msg
+        
+        if new_input:
+            ser.write(kbd_input)
+            new_input = False
+            listener = threading.Thread(target=commandListener)
+            listener.start()
 
     except KeyboardInterrupt:
         ser.close()
