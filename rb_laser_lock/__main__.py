@@ -55,7 +55,8 @@ class zmq_pub_dict:
 publisher = zmq_pub_dict(args.publishport, "rb_laser_error_signal")
 
 ser = serial.Serial()
-ser.port = 'COM14'
+#ser.port = 'COM14'
+ser.port = args.serialport
 ser.baudrate = 115200
 ser.setDTR(False)
 ser.timeout = 2

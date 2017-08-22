@@ -16,19 +16,19 @@ typedef struct {
 int PD_channel = 1;    // input pin for input signal
 
 /* Measured quantities */
-Parameter measured_sig_amp = {"Desired lock-point amplitude [mV]",107}; //the amplitude of the discriminator slope
+Parameter measured_sig_amp = {"Desired lock-point amplitude [mV]",350}; //the amplitude of the discriminator slope
 Parameter loop_speed = {"Running loop speed (locking mode) [kHz]",12.8};
 
 /* Input Initial PID Control ParameteParameterrs */
-Parameter pterm_piezo = {"P (piezo)",0.006};   // proportional gain term on piezo
-Parameter pterm_current = {"P (current)",0.5};   // proportional gain term on current
-Parameter itime = {"Integration time constant [us]",100};    // integration time constant in microseconds
+Parameter pterm_piezo = {"P (piezo)",0.0001};   // proportional gain term on piezo
+Parameter pterm_current = {"P (current)",0.05};   // proportional gain term on current
+Parameter itime = {"Integration time constant [us]",5};    // integration time constant in microseconds
 Parameter stime = {"Second integration time constant [us]",100000}; // second integration time (i squared) in microseconds
 Parameter fterm = {"Feedforward to current",0.1}; //feedforward scaling term
 Parameter alpha = {"Low-pass filter constant alpha",0.4}; //proportional gain low-pass filter constant
 
 /* Adjust Initial Ramp Parameters */
-Parameter freq = {"Scan frequency [Hz]",10}; //in Hz
+Parameter freq = {"Scan frequency [Hz]",10.07}; //in Hz
 Parameter amp = {"Scan amplitude [V]", 0.25}; // in V
 
 /* Global variables */
@@ -60,7 +60,7 @@ void setup()
  SPI.setClockDivider(SPI_CLOCK_DIV2); //required for maximum loop speed
 
  Serial.begin(115200);
- Serial.println("Set line-ending to Newline");
+ Serial.println("Set line-ending to 'no line-ending'");
  Serial.println("");
  Serial.println("To toggle between scan/lock, type [y]."); 
  Serial.println("");
@@ -189,29 +189,22 @@ void GetPID(void) {
 }
 
 /* Accept a serial input float */
-float NumIn(void) {
-    while(!Serial.available()){} //Wait for an input:   
-    if(Serial.available()) {byte Garbage = Serial.read();}  //Throw away the newline printed after the keyletter  
-    String StringIn = "";
-    do {
-      byte_read = Serial.read();
-      //The following will ignore all the "pauses" read in:
-      if(isDigit(byte_read) || byte_read == 46 || byte_read == 45)
-        StringIn += (char)byte_read;
-    } while(byte_read!=10);        
-    return StringIn.toFloat();
+float floatIn() {
+  while(!Serial.available()){} //Wait for serial input
+  return Serial.parseFloat(); //parse the next float
 }
 
 Parameter UpdateParameter(Parameter param) {
   Serial.print(param.param_name + " = ");
-  Serial.print(param.param_value,4);
+  Serial.print(param.param_value,6);
   Serial.println(" - enter a new value for " + param.param_name + ":");
-  float new_value = NumIn();
+  float new_value = floatIn();
   Serial.print(param.param_name + " = ");
-  Serial.println(new_value,4);
+  Serial.println(new_value,6);
   Parameter new_param = {param.param_name,new_value};
   return new_param;
 }
+
 
 
 void loop() // run over and over
@@ -220,6 +213,7 @@ void loop() // run over and over
   
   /* Listen for parameter adjust commands */
   if(byte_read == 'a') {amp = UpdateParameter(amp); }
+  if(byte_read == 'r') {freq = UpdateParameter(freq); }
   if(byte_read == 'f') {fterm = UpdateParameter(fterm); }
   if(byte_read == 'l') {alpha = UpdateParameter(alpha); }
   if(byte_read == 'p') {pterm_piezo = UpdateParameter(pterm_piezo); }
@@ -228,6 +222,8 @@ void loop() // run over and over
   if(byte_read == 's') {stime = UpdateParameter(stime); }
   if(byte_read == 'm') {measured_sig_amp = UpdateParameter(measured_sig_amp); }
   if(byte_read == 'o') {loop_speed = UpdateParameter(loop_speed); }
+  
+  period = 1000000/freq.param_value; //in micros
 
  
   /* Listen for a scan/lock toggle command: */
