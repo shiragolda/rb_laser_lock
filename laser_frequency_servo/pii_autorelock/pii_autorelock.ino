@@ -20,16 +20,17 @@ Parameter measured_sig_amp = {"Desired lock-point amplitude [mV]",350}; //the am
 Parameter loop_speed = {"Running loop speed (locking mode) [kHz]",12.8};
 
 /* Input Initial PID Control ParameteParameterrs */
-Parameter pterm_piezo = {"P (piezo)",0.0001};   // proportional gain term on piezo
-Parameter pterm_current = {"P (current)",0.05};   // proportional gain term on current
-Parameter itime = {"Integration time constant [us]",5};    // integration time constant in microseconds
-Parameter stime = {"Second integration time constant [us]",100000}; // second integration time (i squared) in microseconds
+Parameter pterm_piezo = {"P (piezo)",0.01};   // proportional gain term on piezo
+Parameter pterm_current = {"P (current)",2};   // proportional gain term on current
+Parameter itime = {"Integration time constant [us]",500};    // integration time constant in microseconds
+Parameter stime = {"Second integration time constant [us]",1000}; // second integration time (i squared) in microseconds
+Parameter dtime = {"Derivative time constant [us]",2}; // derivative time constant in microseconds
 Parameter fterm = {"Feedforward to current",0.1}; //feedforward scaling term
-Parameter alpha = {"Low-pass filter constant alpha",0.4}; //proportional gain low-pass filter constant
+Parameter alpha = {"Low-pass filter constant alpha",0.9}; //proportional gain low-pass filter constant
 
 /* Adjust Initial Ramp Parameters */
-Parameter freq = {"Scan frequency [Hz]",10.07}; //in Hz
-Parameter amp = {"Scan amplitude [V]", 0.25}; // in V
+Parameter freq = {"Scan frequency [Hz]",98.7}; //in Hz
+Parameter amp = {"Scan amplitude [V]", 1.5}; // in V
 
 /* Global variables */
 float set_point;
@@ -38,9 +39,12 @@ float lock_point_time;
 float lock_point_offset;
 float PI_out = 0;
 float PIs_out = 0;
+float PIID_out = 0;
 float P_out = 0;
 float error;
-float p_prime = 0;
+float error_previous = 0;
+float d_error;
+float d_error_previous = 0;
 double period = 1000000/freq.param_value; //in micros
 unsigned long current_time;
 unsigned long ramp_time;
@@ -164,8 +168,9 @@ void GetPID(void) {
   float act_signal = ToVoltage(analog.read(PD_channel)); 
   float dt = 1000/loop_speed.param_value; //Loop period (locking mode) in microseconds
   error = set_point-act_signal; 
+  error = (alpha.param_value*error_previous) + (1-alpha.param_value)*error;
+  
   P_out = pterm_piezo.param_value*(error);
-  P_out = (alpha.param_value*p_prime) + (1-alpha.param_value)*P_out;
   
   //Limit output voltage to -4V < Vout < 4V */
   if(P_out>=4)
@@ -173,19 +178,25 @@ void GetPID(void) {
   if(P_out<=-4)
     P_out = -4;
     
-  p_prime = P_out; //store for next iteration
   accumulator += error;  // accumulator is sum of errors (for integral gain term)
   accumulator_squared += error + (1/stime.param_value)*accumulator*dt;
+
+  d_error = error-error_previous;
+  d_error = 0.9*d_error_previous + 0.1*d_error;
   
   //PI_out = P_out+(pterm_piezo.param_value*(1/itime.param_value)*accumulator*dt);
-  PIs_out = P_out+(pterm_piezo.param_value*(1/itime.param_value)*accumulator_squared*dt);
+  //PIs_out = P_out+(pterm_piezo.param_value*(1/itime.param_value)*accumulator_squared*dt);
+  PIID_out = P_out+((pterm_piezo.param_value*(1/itime.param_value)*accumulator_squared*dt)+(dtime.param_value/dt)*(d_error));
   
   //Limit output voltage */
   float limit = (5-amp.param_value)/2;
-  if(PIs_out>=limit)
-    PIs_out = limit;
-  if(PIs_out<=-limit)
-    PIs_out = -limit;
+  if(PIID_out>=limit)
+    PIID_out = limit;
+  if(PIID_out<=-limit)
+    PIID_out = -limit;
+
+  error_previous = error;
+  d_error_previous = d_error;
 }
 
 /* Accept a serial input float */
@@ -220,6 +231,7 @@ void loop() // run over and over
   if(byte_read == 'c') {pterm_current = UpdateParameter(pterm_current); }
   if(byte_read == 'i') {itime = UpdateParameter(itime); }
   if(byte_read == 's') {stime = UpdateParameter(stime); }
+  if(byte_read == 'd') {dtime = UpdateParameter(dtime); }
   if(byte_read == 'm') {measured_sig_amp = UpdateParameter(measured_sig_amp); }
   if(byte_read == 'o') {loop_speed = UpdateParameter(loop_speed); }
   
@@ -228,22 +240,24 @@ void loop() // run over and over
  
   /* Listen for a scan/lock toggle command: */
   if(byte_read == 'y') {
-    lock_state = !lock_state;
+    lock_state = !lock_state; //toggle the lock state
     if(lock_state == 0) {
       Serial.println("scanning mode");
     }
     if(lock_state == 1) {
       Serial.println("locking mode");
-      loop_counter = 0;
+      loop_counter = 0; //reset a bunch of parameters
       accumulator = 0;
       accumulator_squared = 0;
-      GetSetPoint();
+      error_previous = 0;
+      d_error_previous = 0;
+      GetSetPoint(); //find the setpoint
       set_point = lock_point;
       
       // Scan once more until lock_point_time so system is in the capture range:
       ramp_reset_time = micros();
       do {
-        current_time = micros(); //time in mircoseconds
+        current_time = micros(); //time in microseconds
         ramp_time = current_time-ramp_reset_time;
         analog.write(ToBits(RampOut(ramp_time)),ToBits(0),true);
       } while(ramp_time<lock_point_time);
@@ -269,7 +283,7 @@ void loop() // run over and over
   if(lock_state == 1) {
     loop_counter ++;
     GetPID();  //OUT0 to the piezo, OUT1 to the current controller
-    analog.write(ToBits(PIs_out+lock_point_offset),ToBits(-1.0*(pterm_current.param_value/pterm_piezo.param_value)*P_out-1.0*fterm.param_value*PIs_out),true);
+    analog.write(ToBits(PIID_out+lock_point_offset),ToBits(-1.0*(pterm_current.param_value/pterm_piezo.param_value)*P_out-1.0*fterm.param_value*PIID_out),true);
 
   /* AUTO-RELOCK */
     if(abs(accumulator)>50) {
@@ -292,9 +306,10 @@ void loop() // run over and over
     if(loop_counter%75000 == 0) {
       Serial.print(error,4);
       Serial.print(',');
-      float correction = PIs_out+lock_point_offset;
+      float correction = PIID_out+lock_point_offset;
       Serial.println(correction,4);
     } 
   }
+ 
 
 }
